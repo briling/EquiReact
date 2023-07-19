@@ -21,7 +21,9 @@ faulthandler.enable()
 
 from trainer.metrics import MAE
 from trainer.react_trainer import ReactTrainer
+from trainer.map_trainer import MapTrainer
 from models.equireact import EquiReact
+from models.mapping import AtomMapper
 from process.dataloader_cyclo import Cyclo23TS
 from process.dataloader_gdb import GDB722TS
 from process.collate import CustomCollator
@@ -170,7 +172,7 @@ def train(run_dir, run_name, project, wandb_name, hyper_dict,
             print(f"{input_node_feats_dim=}")
             print(f"{input_edge_feats_dim=}")
 
-        model = EquiReact(node_fdim=input_node_feats_dim, edge_fdim=1, verbose=verbose, device=device,
+        model = AtomMapper(node_fdim=input_node_feats_dim, edge_fdim=1, verbose=verbose, device=device,
                           max_radius=radius, max_neighbors=max_neighbors, sum_mode=sum_mode, n_s=n_s, n_v=n_v, n_conv_layers=n_conv_layers,
                           distance_emb_dim=distance_emb_dim, graph_mode=graph_mode, dropout_p=dropout_p, random_baseline=random_baseline,
                           combine_mode=combine_mode, atom_mapping=atom_mapping, attention=attention, two_layers_atom_diff=two_layers_atom_diff)
@@ -185,7 +187,7 @@ def train(run_dir, run_name, project, wandb_name, hyper_dict,
         val_loader = DataLoader(val_data, batch_size=batch_size, collate_fn=custom_collate, pin_memory=pin_memory,
                                 num_workers=num_workers)
 
-        trainer = ReactTrainer(model=model, std=std, device=device, metrics={'mae':MAE()},
+        trainer = MapTrainer(model=model, std=std, device=device, metrics={'mae':MAE()},
                                run_dir=run_dir, run_name=run_name,
                                sampler=sampler, val_per_batch=val_per_batch,
                                checkpoint=checkpoint, num_epochs=num_epochs,
