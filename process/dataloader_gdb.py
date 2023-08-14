@@ -107,62 +107,40 @@ class GDB722TS(Dataset):
 
     def process(self):
 
-        print(f"Processing xyz files and saving coords to {self.processed_dir}")
+        print(f"Processing csv file and saving graphs to {self.processed_dir}")
         if not exists(self.processed_dir):
             os.mkdir(self.processed_dir)
             print(f"Creating processed directory {self.processed_dir}")
-
-        reactant_coords_list    = []
-        reactant_atomtypes_list = []
-        products_coords_list    = []
-        products_atomtypes_list = []
-
-        for idx in tqdm(self.indices, desc='reading xyz files'):
-
-            r_file, p_files = self.xyz_files(idx)
-            # 1 reactant
-            atomtypes, coords = reader(r_file, bohr=self.bohr)
-            reactant_atomtypes_list.append(atomtypes)
-            reactant_coords_list.append(coords)
-            # multiple products
-            products_atomtypes_list.append([])
-            products_coords_list.append([])
-            assert len(p_files) <= self.max_number_of_products, 'more products than the maximum number of products'
-            for p_file in p_files:
-                atomtypes, coords = reader(p_file, bohr=self.bohr)
-                products_atomtypes_list[-1].append(atomtypes)
-                products_coords_list[-1].append(coords)
-
-        assert len(reactant_coords_list)    == len(products_coords_list), 'not as many products as reactants'
-        assert len(products_atomtypes_list) == len(products_coords_list), 'not as many atomtypes as coords for products'
-        assert len(reactant_atomtypes_list) == len(reactant_coords_list), 'not as many atomtypes as coords for reactants'
-
-        # Graphs
-        print(f"Processing csv file and saving graphs to {self.processed_dir}")
 
         empty = get_empty_graph()
 
         self.products_graphs = []
         self.reactants_graphs = []
         self.p2r_maps = []
+
         for i, idx in enumerate(tqdm(self.indices, desc="making graphs")):
+
             rxnsmi = self.df[self.df['idx'] == idx]['rxn_smiles'].item()
             rsmi, psmis = rxnsmi.split('>>')
+            r_file, p_files = self.xyz_files(idx)
 
-            # reactant
-            rgraph, rmap, ratom = self.make_graph(rsmi, reactant_atomtypes_list[i], reactant_coords_list[i], i, f'r{idx:06d}')
+            # one reactant
+            r_atomtypes, r_coords = reader(r_file, bohr=self.bohr)
+            rgraph, rmap, ratom = self.make_graph(rsmi, r_atomtypes, r_coords, i, f'r{idx:06d}')
             self.reactants_graphs.append([rgraph])
 
-            # products
+            # multiple products
+            nprod = len(p_files)
             psmis = psmis.split('.')
-            nprod = len(products_coords_list[i])
+            assert nprod <= self.max_number_of_products, 'more products than the maximum number of products'
             assert len(psmis) == nprod, 'number of products doesnt match'
 
             pgraphs = []
             pmaps = []
             patoms = []
-            for ip, args in enumerate(zip(psmis, products_atomtypes_list[i], products_coords_list[i])):
-                pgraph, pmap, patom = self.make_graph(*args, i, f'p{idx:06d}_{ip}')
+            for ip, (psmi, p_file) in enumerate(zip(psmis, p_files)):
+                p_atomtypes, p_coords = reader(p_file, bohr=self.bohr)
+                pgraph, pmap, patom = self.make_graph(psmi, p_atomtypes, p_coords, i, f'p{idx:06d}_{ip}')
                 if pgraph is None:
                     nprod -= 1
                     continue
