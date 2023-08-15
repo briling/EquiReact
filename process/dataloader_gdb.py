@@ -205,31 +205,27 @@ class GDB722TS(Dataset):
         mol = Chem.MolFromSmiles(smi, sanitize=False)
         assert mol is not None, f"mol obj {idx} is None from smi {smi}"
         Chem.SanitizeMol(mol)
+        if self.rxnmapper and self.noH:
+            mol = Chem.AddHs(mol)
+            Chem.SanitizeMol(mol)
+        assert len(atoms)==mol.GetNumAtoms(), f"nats don't match in idx {idx}"
+        atom_map = np.array([at.GetAtomMapNum() for at in mol.GetAtoms()])-1
 
         if self.noH:
             natoms_relevant = np.count_nonzero(np.array([at.GetSymbol() for at in mol.GetAtoms()])!='H')
-            mol = Chem.RemoveAllHs(mol)
-            mol = Chem.AddHs(mol)
-            Chem.SanitizeMol(mol)
         else:
             natoms_relevant = mol.GetNumAtoms()
         if natoms_relevant==0:
             return None, None, None
 
-        assert len(atoms)==mol.GetNumAtoms(), f"nats don't match in idx {idx}"
-
-        atom_map = np.array([at.GetAtomMapNum() for at in mol.GetAtoms()])
-        assert np.all(atom_map[:natoms_relevant] > 0), f"mol {idx} is not atom-mapped"
-        atom_map -= 1
-
         if mapped:
+            assert np.all(atom_map >= 0), f"mol {idx} is not atom-mapped"
             new_atoms = atoms[atom_map]
             new_coords = coords[atom_map]
 
         else:
             rdkit_bonds = np.array(sorted(sorted((i.GetBeginAtomIdx(), i.GetEndAtomIdx())) for i in mol.GetBonds()))
             rdkit_atoms = np.array([at.GetSymbol() for at in mol.GetAtoms()])
-
             xyz_bonds = self.get_xyz_bonds(len(rdkit_bonds), atoms, coords)
             assert xyz_bonds is not None, f"different number of bonds in {idx}"
 
@@ -242,21 +238,27 @@ class GDB722TS(Dataset):
                 G2 = self.make_nx_graph(atoms, xyz_bonds)
                 GM = iso.GraphMatcher(G1, G2, node_match=iso.categorical_node_match('q', None))
                 assert GM.is_isomorphic(), f"smiles and xyz graphs are not isomorphic in {idx}"
-
                 match = next(GM.match())
                 src, dst = np.array(sorted(match.items(), key=lambda match: match[0])).T
                 assert np.all(src==np.arange(G1.number_of_nodes()))
-
                 new_atoms = atoms[dst]
                 new_coords = coords[dst]
 
         if self.noH:
             mol = Chem.RemoveAllHs(mol)
-            assert natoms_relevant == mol.GetNumAtoms(), f'different number of atoms before adding/removing Hs and after in {idx}'
+            Chem.SanitizeMol(mol)
             noH_idx = np.where(new_atoms!='H')
             new_atoms = new_atoms[noH_idx]
             new_coords = new_coords[noH_idx]
             atom_map = atom_map[noH_idx]
+
+        assert np.all(atom_map>= 0), f"mol {idx} is not atom-mapped"
+
+        if True:
+            rdkit_bonds = np.array(sorted(sorted((i.GetBeginAtomIdx(), i.GetEndAtomIdx())) for i in mol.GetBonds()))
+            rdkit_atoms = np.array([at.GetSymbol() for at in mol.GetAtoms()])
+            xyz_bonds = self.get_xyz_bonds(len(rdkit_bonds), new_atoms, new_coords)
+            assert np.all(rdkit_bonds==xyz_bonds)
 
         graph = get_graph(mol, new_atoms, new_coords, ireact)
         return graph, atom_map, new_atoms
