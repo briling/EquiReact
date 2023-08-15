@@ -39,13 +39,14 @@ class GDB722TS(Dataset):
             csv_path = 'data/gdb7-22-ts/ccsdtf12_dz_cleaned.csv'
         print(f'{csv_path=}')
 
-        self.version = 10  # INCREASE IF CHANGE THE DATA / DATALOADER / GRAPHS / ETC
+        self.version = 11  # INCREASE IF CHANGE THE DATA / DATALOADER / GRAPHS / ETC
         self.max_number_of_reactants = 1
         self.max_number_of_products = 3
 
         self.processed_dir = processed_dir + '/'
         self.atom_mapping = atom_mapping
         self.noH = noH
+        self.rxnmapper = rxnmapper
 
         dataset_prefix = os.path.splitext(os.path.basename(csv_path))[0]
         if noH:
@@ -126,7 +127,7 @@ class GDB722TS(Dataset):
 
             # one reactant
             r_atomtypes, r_coords = reader(r_file, bohr=self.bohr)
-            rgraph, rmap, ratom = self.make_graph(rsmi, r_atomtypes, r_coords, i, f'r{idx:06d}')
+            rgraph, rmap, ratom = self.make_graph(rsmi, r_atomtypes, r_coords, i, f'r{idx:06d}', mapped=not self.rxnmapper)
             self.reactants_graphs.append([rgraph])
 
             # multiple products
@@ -140,7 +141,7 @@ class GDB722TS(Dataset):
             patoms = []
             for ip, (psmi, p_file) in enumerate(zip(psmis, p_files)):
                 p_atomtypes, p_coords = reader(p_file, bohr=self.bohr)
-                pgraph, pmap, patom = self.make_graph(psmi, p_atomtypes, p_coords, i, f'p{idx:06d}_{ip}')
+                pgraph, pmap, patom = self.make_graph(psmi, p_atomtypes, p_coords, i, f'p{idx:06d}_{ip}', mapped=((not self.rxnmapper) and (nprod==1)))
                 if pgraph is None:
                     nprod -= 1
                     continue
@@ -199,7 +200,7 @@ class GDB722TS(Dataset):
         return G
 
 
-    def make_graph(self, smi, atoms, coords, ireact, idx):
+    def make_graph(self, smi, atoms, coords, ireact, idx, mapped=False):
         mol = Chem.MolFromSmiles(smi, sanitize=False)
         assert mol is not None, f"mol obj {idx} is None from smi {smi}"
         Chem.SanitizeMol(mol)
@@ -218,29 +219,35 @@ class GDB722TS(Dataset):
 
         atom_map = np.array([at.GetAtomMapNum() for at in mol.GetAtoms()])
         assert np.all(atom_map[:natoms_relevant] > 0), f"mol {idx} is not atom-mapped"
+        atom_map -= 1
 
-        rdkit_bonds = np.array(sorted(sorted((i.GetBeginAtomIdx(), i.GetEndAtomIdx())) for i in mol.GetBonds()))
-        rdkit_atoms = np.array([at.GetSymbol() for at in mol.GetAtoms()])
+        if mapped:
+            new_atoms = atoms[atom_map]
+            new_coords = coords[atom_map]
 
-        xyz_bonds = self.get_xyz_bonds(len(rdkit_bonds), atoms, coords)
-        assert xyz_bonds is not None, f"different number of bonds in {idx}"
-
-        if np.all(rdkit_atoms==atoms) and np.all(rdkit_bonds==xyz_bonds):
-            # Don't search for a match because the first one doesn't have to be the shortest one
-            new_atoms = atoms
-            new_coords = coords
         else:
-            G1 = self.make_nx_graph(rdkit_atoms, rdkit_bonds)
-            G2 = self.make_nx_graph(atoms, xyz_bonds)
-            GM = iso.GraphMatcher(G1, G2, node_match=iso.categorical_node_match('q', None))
-            assert GM.is_isomorphic(), f"smiles and xyz graphs are not isomorphic in {idx}"
+            rdkit_bonds = np.array(sorted(sorted((i.GetBeginAtomIdx(), i.GetEndAtomIdx())) for i in mol.GetBonds()))
+            rdkit_atoms = np.array([at.GetSymbol() for at in mol.GetAtoms()])
 
-            match = next(GM.match())
-            src, dst = np.array(sorted(match.items(), key=lambda match: match[0])).T
-            assert np.all(src==np.arange(G1.number_of_nodes()))
+            xyz_bonds = self.get_xyz_bonds(len(rdkit_bonds), atoms, coords)
+            assert xyz_bonds is not None, f"different number of bonds in {idx}"
 
-            new_atoms = atoms[dst]
-            new_coords = coords[dst]
+            if np.all(rdkit_atoms==atoms) and np.all(rdkit_bonds==xyz_bonds):
+                # Don't search for a match because the first one doesn't have to be the shortest one
+                new_atoms = atoms
+                new_coords = coords
+            else:
+                G1 = self.make_nx_graph(rdkit_atoms, rdkit_bonds)
+                G2 = self.make_nx_graph(atoms, xyz_bonds)
+                GM = iso.GraphMatcher(G1, G2, node_match=iso.categorical_node_match('q', None))
+                assert GM.is_isomorphic(), f"smiles and xyz graphs are not isomorphic in {idx}"
+
+                match = next(GM.match())
+                src, dst = np.array(sorted(match.items(), key=lambda match: match[0])).T
+                assert np.all(src==np.arange(G1.number_of_nodes()))
+
+                new_atoms = atoms[dst]
+                new_coords = coords[dst]
 
         if self.noH:
             mol = Chem.RemoveAllHs(mol)
@@ -251,7 +258,7 @@ class GDB722TS(Dataset):
             atom_map = atom_map[noH_idx]
 
         graph = get_graph(mol, new_atoms, new_coords, ireact)
-        return graph, atom_map-1, new_atoms
+        return graph, atom_map, new_atoms
 
 
     def add_reverse(self):
