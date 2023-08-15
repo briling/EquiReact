@@ -139,16 +139,17 @@ class GDB722TS(Dataset):
             pgraphs = []
             pmaps = []
             patoms = []
+            pad_size = self.max_number_of_products-nprod
             for ip, (psmi, p_file) in enumerate(zip(psmis, p_files)):
                 p_atomtypes, p_coords = reader(p_file, bohr=self.bohr)
                 pgraph, pmap, patom = self.make_graph(psmi, p_atomtypes, p_coords, i, f'p{idx:06d}_{ip}', mapped=((not self.rxnmapper) and (nprod==1)))
                 if pgraph is None:
-                    nprod -= 1
+                    pad_size += 1
                     continue
                 pgraphs.append(pgraph)
                 pmaps.append(pmap)
                 patoms.append(patom)
-            padding = [empty] * (self.max_number_of_products-nprod)
+            padding = [empty] * pad_size
             self.products_graphs.append(pgraphs + padding)
 
             pmaps = np.hstack(pmaps)
