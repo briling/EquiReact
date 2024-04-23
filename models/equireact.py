@@ -5,9 +5,42 @@ import torch.nn.functional as F
 from e3nn import o3
 from torch_scatter import scatter, scatter_mean, scatter_add
 from torch_cluster import radius_graph
+from math import sqrt
 
-from ._tensor_product import TensorProduct as NoTensorProduct
 
+class NoTensorProduct(nn.Module):
+    def __init__(self, n_s):
+        super().__init__()
+        self.n_s = n_s
+        self.weight_numel = n_s * n_s
+    def forward(self, x, weight):
+        assert x.shape[-1] == self.n_s, "Incorrect last dimension for x"
+        assert weight.shape[-1] == self.weight_numel, "Invalid weight shape"
+        return torch.einsum("zuw,zu->zw", weight.reshape((-1, self.n_s, self.n_s)), x) / sqrt(self.n_s)
+
+
+class NoTensorProductConvLayer(nn.Module):
+    def __init__(self, edge_fdim, n_s, residual=True, dropout=0.0, h_dim=None):
+        super(NoTensorProductConvLayer, self).__init__()
+        self.residual = residual
+        if h_dim is None:
+            h_dim = edge_fdim
+        self.tp = tp = NoTensorProduct(n_s)
+        self.fc_net = nn.Sequential(
+            nn.Linear(edge_fdim, h_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(h_dim, tp.weight_numel)
+        )
+    def forward(self, x, edge_index, edge_attr, edge_sh, out_nodes=None, aggr='mean'):
+        edge_src, edge_dst = edge_index
+        tp_out = self.tp(x[edge_src], self.fc_net(edge_attr))
+        out_nodes = out_nodes or x.shape[0]
+        out = scatter(src=tp_out, index=edge_dst, dim=0, dim_size=out_nodes, reduce=aggr)
+        if self.residual:
+            padded = F.pad(x, (0, out.shape[-1] - x.shape[-1]))
+            out = out + padded
+        return out
 
 
 def get_device(tensor):
@@ -33,39 +66,6 @@ class GaussianSmearing(nn.Module):
         dist = dist.to(self.device)
         dist = dist.view(-1, 1) - self.mu.view(1, -1)
         return torch.exp(self.coeff * torch.pow(dist, 2))
-
-
-class NoTensorProductConvLayer(nn.Module):
-
-    def __init__(self, edge_fdim, n_s, residual=True, dropout=0.0, h_dim=None):
-        super(NoTensorProductConvLayer, self).__init__()
-        self.residual = residual
-        if h_dim is None:
-            h_dim = edge_fdim
-
-        self.tp = tp = NoTensorProduct(n_s)
-
-        self.fc_net = nn.Sequential(
-            nn.Linear(edge_fdim, h_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(h_dim, tp.weight_numel)
-        )
-
-    def forward(self, x, edge_index, edge_attr, edge_sh, out_nodes=None, aggr='mean'):
-        edge_src, edge_dst = edge_index
-        tp_out = self.tp(x[edge_src], edge_sh, self.fc_net(edge_attr))
-
-        out_nodes = out_nodes or x.shape[0]
-
-        out = scatter(src=tp_out, index=edge_dst, dim=0, dim_size=out_nodes, reduce=aggr)
-
-        if self.residual:
-            padded = F.pad(x, (0, out.shape[-1] - x.shape[-1]))
-            out = out + padded
-
-        return out
-
 
 
 class TensorProductConvLayer(nn.Module):
@@ -114,7 +114,7 @@ class EquiReact(nn.Module):
                  sum_mode='node', verbose=False, device='cpu', graph_mode='energy',
                  random_baseline=False, combine_mode='diff', atom_mapping=False,
                  attention=None, two_layers_atom_diff=False,
-                 invariant=False,
+                 invariant=False, invariant_opt=True,
                  **kwargs):
 
         super().__init__(**kwargs)
@@ -163,7 +163,6 @@ class EquiReact(nn.Module):
             ]
 
 
-
         self.node_embedding = nn.Sequential(
             nn.Linear(node_fdim, n_s),
             nn.ReLU(),
@@ -186,17 +185,23 @@ class EquiReact(nn.Module):
             out_irreps = irrep_seq[min(i + 1, len(irrep_seq) - 1)]
 
             parameters = {
-                #"in_irreps": in_irreps,
-                #"sh_irreps": self.sh_irreps,
-                #"out_irreps": out_irreps,
+                "in_irreps": in_irreps,
+                "sh_irreps": self.sh_irreps,
+                "out_irreps": out_irreps,
                 "edge_fdim": 3 * n_s,
                 "h_dim": 3 * n_s,
                 "residual": False,
                 "dropout": dropout_p,
-                "n_s": n_s,
             }
 
-            layer = NoTensorProductConvLayer(**parameters)
+            if invariant_opt:
+                print('====== use simplified invariant layers')
+                layer = NoTensorProductConvLayer(n_s=n_s, edge_fdim=parameters["edge_fdim"],
+                                                 residual=parameters["residual"],
+                                                 dropout=parameters["dropout"], h_dim=parameters["h_dim"])
+            else:
+                print('====== use', 'invariant' if invariant else 'equivariant', 'layers')
+                layer = TensorProductConvLayer(**parameters)
             conv_layers.append(layer)
         self.conv_layers = nn.ModuleList(conv_layers)
 
